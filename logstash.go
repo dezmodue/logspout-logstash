@@ -161,10 +161,35 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 				break
 			}
 
+			// User decided not to retry
 			if os.Getenv("RETRY_SEND") == "" {
-				log.Fatal("logstash: could not write:", err)
-			} else {
+				log.Fatal("logstash: Error while sending data and RETRY_SEND is undefined:", err)
+			}
+
+			t, ok := err.(net.Error)
+			if !ok {
+				// Unknown error
+				// Should we instead log the error and the log message that we failed to send and continue?
+				log.Fatal("logstash: failed sending data, unrecoverable error:", err)
+			}
+
+			if t.Temporary() {
+				log.Println("Temporary error while sending data, retrying in 2 seconds", err)
 				time.Sleep(2 * time.Second)
+			} else {
+				log.Println("Broken connection", err)
+				// Retry with exponential backup
+				for {
+					conn, err := a.transport.Dial(a.route.Address, a.route.options)
+					if err == nil {
+						log.Println("Reconnected successfully!")
+						a.conn = conn
+						break
+					} else {
+						log.Println("Reconnecting!")
+						time.Sleep(2 * time.Second)
+					}
+				}
 			}
 		}
 	}
