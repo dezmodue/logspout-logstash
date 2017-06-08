@@ -20,6 +20,7 @@ func init() {
 // LogstashAdapter is an adapter that streams UDP JSON to Logstash.
 type LogstashAdapter struct {
 	conn           net.Conn
+	transport      router.AdapterTransport
 	route          *router.Route
 	containerTags  map[string][]string
 	logstashFields map[string]map[string]string
@@ -38,6 +39,7 @@ func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
 		if err == nil {
 			return &LogstashAdapter{
 				route:          route,
+				transport:      transport,
 				conn:           conn,
 				containerTags:  make(map[string][]string),
 				logstashFields: make(map[string]map[string]string),
@@ -156,39 +158,26 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 
 		for {
 			_, err := a.conn.Write(js)
-
 			if err == nil {
+				log.Printf("Successfully sent log %v", js)
 				break
 			}
 
-			// User decided not to retry
 			if os.Getenv("RETRY_SEND") == "" {
-				log.Fatal("logstash: Error while sending data and RETRY_SEND is undefined:", err)
+				log.Fatal("logstash: could not write:", err)
 			}
 
-			t, ok := err.(net.Error)
-			if !ok {
-				// Unknown error
-				// Should we instead log the error and the log message that we failed to send and continue?
-				log.Fatal("logstash: failed sending data, unrecoverable error:", err)
-			}
+			log.Printf("Error while writing %v", js)
 
-			if t.Temporary() {
-				log.Println("Temporary error while sending data, retrying in 2 seconds", err)
-				time.Sleep(2 * time.Second)
-			} else {
-				log.Println("Broken connection", err)
-				// Retry with exponential backup
-				for {
-					conn, err := a.transport.Dial(a.route.Address, a.route.options)
-					if err == nil {
-						log.Println("Reconnected successfully!")
-						a.conn = conn
-						break
-					} else {
-						log.Println("Reconnecting!")
-						time.Sleep(2 * time.Second)
-					}
+			log.Printf("logstash: write failed, retrying in 2 seconds: %v", err)
+			time.Sleep(2 * time.Second)
+			if e, ok := err.(net.Error); ok && !e.Temporary() {
+				log.Printf("logstash: non-temporary network error – attempting to reconnect")
+				conn, err := a.transport.Dial(a.route.Address, a.route.Options)
+				if err == nil {
+					a.conn = conn
+				} else {
+					log.Printf("logstash: reconnect failed: %v", err)
 				}
 			}
 		}
